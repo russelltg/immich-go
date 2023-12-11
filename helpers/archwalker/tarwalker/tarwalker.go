@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -95,13 +96,15 @@ func (d *dirEntry) Type() fs.FileMode {
 	return d.Mode()
 }
 
-func (w *TarWalker) Close() {
+func (w *TarWalker) Close() error {
+	var err error
 	if w.gzipReader != nil {
-		w.gzipReader.Close()
+		errors.Join(err, w.gzipReader.Close())
 	}
 	if w.fileReader != nil {
-		w.fileReader.Close()
+		errors.Join(err, w.fileReader.Close())
 	}
+	return err
 }
 
 func (w *TarWalker) Open() (fs.File, error) {

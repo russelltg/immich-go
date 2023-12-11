@@ -58,6 +58,6 @@ func (w *ZipWalker) Open() (fs.File, error) {
 	return w.zipReader.Open(w.files[w.currentFile].Name)
 }
 
-func (w *ZipWalker) Close() {
-	w.zipReader.Close()
+func (w *ZipWalker) Close() error {
+	return w.zipReader.Close()
 }
