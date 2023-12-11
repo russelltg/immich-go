@@ -87,7 +87,8 @@ func (w *FsWalker) Open() (fs.File, error) {
 	return os.Open(w.currFile.fullName)
 }
 
-func (w *FsWalker) Close() {
+func (w *FsWalker) Close() error {
 	close(w.stopChan)
 	w.running.Wait()
+	return nil
 }
