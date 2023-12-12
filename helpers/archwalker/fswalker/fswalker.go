@@ -2,15 +2,13 @@ package fswalker
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"io/fs"
-	"os"
-	"path"
 	"sync"
 )
 
 type FsWalker struct {
+	fsys      fs.FS
 	recursive bool
 	fileChan  chan fileinfo
 	stopChan  chan any
@@ -24,30 +22,22 @@ type fileinfo struct {
 	dirEntry fs.DirEntry
 }
 
-func New(ctx context.Context, pathName string, recursive bool) (*FsWalker, error) {
-	info, err := os.Stat(pathName)
-	if err != nil {
-		return nil, err
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("'%s' isn't a directory", pathName)
-	}
-
+func New(ctx context.Context, fsys fs.FS, recursive bool) (*FsWalker, error) {
 	w := FsWalker{
+		fsys:      fsys,
 		recursive: recursive,
 		fileChan:  make(chan fileinfo),
 		stopChan:  make(chan any),
 	}
 	w.running.Add(1)
-	go w.run(ctx, pathName)
+	go w.run(ctx)
 	return &w, nil
 }
 
-func (w *FsWalker) run(ctx context.Context, p string) {
+func (w *FsWalker) run(ctx context.Context) {
 	defer w.running.Done()
-	fsys := os.DirFS(p)
 
-	err := fs.WalkDir(fsys, ".", func(name string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(w.fsys, ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -63,7 +53,7 @@ func (w *FsWalker) run(ctx context.Context, p string) {
 			return ctx.Err()
 		case <-w.stopChan:
 			return fs.SkipAll
-		case w.fileChan <- fileinfo{fullName: path.Join(p, name), dirEntry: d}:
+		case w.fileChan <- fileinfo{fullName: name, dirEntry: d}:
 		}
 		return nil
 	})
@@ -84,7 +74,7 @@ func (w *FsWalker) Next() (string, fs.DirEntry, error) {
 }
 
 func (w *FsWalker) Open() (fs.File, error) {
-	return os.Open(w.currFile.fullName)
+	return w.fsys.Open(w.currFile.fullName)
 }
 
 func (w *FsWalker) Close() error {

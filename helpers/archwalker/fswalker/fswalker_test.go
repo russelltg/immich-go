@@ -3,6 +3,7 @@ package fswalker_test
 import (
 	"context"
 	"io"
+	"os"
 	"reflect"
 	"testing"
 
@@ -21,25 +22,25 @@ func Test_FsWalker(t *testing.T) {
 			name: "non recursive",
 			path: "TEST_DATA",
 			rec:  false,
-			want: []string{"TEST_DATA/métadonnées.json"},
+			want: []string{"métadonnées.json"},
 		},
 		{
 			name: "recursive",
 			path: "TEST_DATA",
 			rec:  true,
 			want: []string{
-				"TEST_DATA/Google Photos/Photos from 2023/PXL_20231006_063000139.jpg.json",
-				"TEST_DATA/Google Photos/Photos from 2023/PXL_20231006_063528961.jpg.json",
-				"TEST_DATA/Google Photos/Sans titre(9)/PXL_20231006_063108407.jpg.json",
-				"TEST_DATA/Google Photos/Sans titre(9)/métadonnées.json",
-				"TEST_DATA/métadonnées.json",
+				"Google Photos/Photos from 2023/PXL_20231006_063000139.jpg.json",
+				"Google Photos/Photos from 2023/PXL_20231006_063528961.jpg.json",
+				"Google Photos/Sans titre(9)/PXL_20231006_063108407.jpg.json",
+				"Google Photos/Sans titre(9)/métadonnées.json",
+				"métadonnées.json",
 			},
 		},
 	}
 
 	for _, tt := range tc {
 		t.Run(tt.name, func(t *testing.T) {
-			w, err := fswalker.New(context.Background(), tt.path, tt.rec)
+			w, err := fswalker.New(context.Background(), os.DirFS(tt.path), tt.rec)
 			if err != nil {
 				t.Errorf("can't create the walker: %s", err)
 				return
