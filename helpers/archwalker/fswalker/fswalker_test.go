@@ -45,34 +45,38 @@ func Test_FsWalker(t *testing.T) {
 				t.Errorf("can't create the walker: %s", err)
 				return
 			}
-			got := []string{}
-			for {
-				p, _, err := w.Next()
-				if err == io.EOF {
-					break
+			for i := 0; i < 10; i++ {
+
+				got := []string{}
+				for {
+					p, _, err := w.Next()
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						t.Errorf("unexpected error: %s", err)
+						return
+					}
+					got = append(got, p)
+					f, err := w.Open()
+					if err != nil {
+						t.Errorf("can't open the file %s error: %s", p, err)
+						return
+					}
+					_, err = io.Copy(io.Discard, f)
+					if err != nil {
+						t.Errorf("can't read the file %s error: %s", p, err)
+						return
+					}
+					f.Close()
 				}
-				if err != nil {
-					t.Errorf("unexpected error: %s", err)
-					return
+				w.Rewind()
+				if !reflect.DeepEqual(got, tt.want) {
+					t.Errorf("result")
+					pretty.Ldiff(t, tt.want, got)
 				}
-				got = append(got, p)
-				f, err := w.Open()
-				if err != nil {
-					t.Errorf("can't open the file %s error: %s", p, err)
-					return
-				}
-				_, err = io.Copy(io.Discard, f)
-				if err != nil {
-					t.Errorf("can't read the file %s error: %s", p, err)
-					return
-				}
-				f.Close()
 			}
 			w.Close()
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("result")
-				pretty.Ldiff(t, tt.want, got)
-			}
 		})
 	}
 

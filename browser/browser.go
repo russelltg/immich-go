@@ -20,6 +20,7 @@ type Configuration struct {
 	SelectExtensions  StringList
 	ExcludeExtensions StringList
 	Recursive         bool
+	Threads           int
 }
 
 func (c *Configuration) IsValid() error {

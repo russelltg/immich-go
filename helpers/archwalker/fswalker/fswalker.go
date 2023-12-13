@@ -8,6 +8,7 @@ import (
 )
 
 type FsWalker struct {
+	ctx       context.Context
 	fsys      fs.FS
 	recursive bool
 	fileChan  chan fileinfo
@@ -25,15 +26,19 @@ type fileinfo struct {
 func New(ctx context.Context, fsys fs.FS, recursive bool) (*FsWalker, error) {
 	w := FsWalker{
 		fsys:      fsys,
+		ctx:       ctx,
 		recursive: recursive,
-		fileChan:  make(chan fileinfo),
-		stopChan:  make(chan any),
 	}
-	w.running.Add(1)
-	go w.run(ctx)
+	w.start()
 	return &w, nil
 }
 
+func (w *FsWalker) start() {
+	w.fileChan = make(chan fileinfo)
+	w.stopChan = make(chan any)
+	w.running.Add(1)
+	go w.run(w.ctx)
+}
 func (w *FsWalker) run(ctx context.Context) {
 	defer w.running.Done()
 
@@ -52,7 +57,7 @@ func (w *FsWalker) run(ctx context.Context) {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-w.stopChan:
-			return fs.SkipAll
+			return io.EOF
 		case w.fileChan <- fileinfo{fullName: name, dirEntry: d}:
 		}
 		return nil
@@ -79,6 +84,15 @@ func (w *FsWalker) Open() (fs.File, error) {
 
 func (w *FsWalker) Close() error {
 	close(w.stopChan)
-	w.running.Wait()
+	<-w.running.Wait()
+	return nil
+}
+
+func (w *FsWalker) Rewind() error {
+	err := w.Close()
+	if err != nil {
+		return nil
+	}
+	w.start()
 	return nil
 }

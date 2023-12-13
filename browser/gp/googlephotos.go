@@ -10,22 +10,25 @@ import (
 	"unicode/utf8"
 
 	"github.com/simulot/immich-go/browser"
+	"github.com/simulot/immich-go/helpers/archwalker"
 	"github.com/simulot/immich-go/helpers/fshelper"
 	"github.com/simulot/immich-go/helpers/gen"
+	"github.com/simulot/immich-go/internal/xsync"
 	"github.com/simulot/immich-go/journal"
 	"github.com/simulot/immich-go/logger"
 )
 
 type Takeout struct {
-	fsys        fs.FS
-	filesByDir  map[string][]fileReference    // files name mapped by dir
-	jsonByYear  map[jsonKey]*GoogleMetaData   // assets by year of capture and full path
-	albumsByDir map[string]browser.LocalAlbum // album title mapped by dir
+	walkers     []archwalker.Walker
+	filesByDir  xsync.Map[string, xsync.List[fileReference]] //map[string][]fileReference    // files name mapped by dir
+	jsonByYear  xsync.Map[jsonKey, *GoogleMetaData]          // map[jsonKey]*GoogleMetaData                  // assets by year of capture and full path
+	albumsByDir xsync.Map[string, browser.LocalAlbum]        // map[string]browser.LocalAlbum                // album title mapped by dir
 	log         logger.Logger
 	conf        *browser.Configuration
 }
 
 type fileReference struct {
+	walker archwalker.Walker
 	fileKey
 	taken bool // True, when the file as been associated to a json and sent to the uploader
 }
@@ -42,18 +45,22 @@ type Album struct {
 	Title string
 }
 
-func NewTakeout(ctx context.Context, fsys fs.FS, log logger.Logger, conf *browser.Configuration) (*Takeout, error) {
+func NewTakeout(ctx context.Context, log logger.Logger, conf *browser.Configuration, walkers []archwalker.Walker) (*Takeout, error) {
 	to := Takeout{
-		fsys:        fsys,
-		filesByDir:  map[string][]fileReference{},
-		jsonByYear:  map[jsonKey]*GoogleMetaData{},
-		albumsByDir: map[string]browser.LocalAlbum{},
+		walkers:     walkers,
+		filesByDir:  xsync.Map[string, xsync.List[fileReference]]{}, // map[string][]fileReference{},
+		jsonByYear:  xsync.Map[jsonKey, *GoogleMetaData]{},          // map[jsonKey]*GoogleMetaData{},
+		albumsByDir: xsync.Map[string, browser.LocalAlbum]{},        // map[string]browser.LocalAlbum{},
 		log:         log,
 		conf:        conf,
 	}
 	err := to.walk(ctx, fsys)
 
 	return &to, err
+}
+
+func (to *Takeout) scan(w archwalker.Walker) {
+
 }
 
 // walk the given FS to collect images file names and metadata files
