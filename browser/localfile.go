@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/simulot/immich-go/helpers/fshelper"
 	"github.com/simulot/immich-go/immich/metadata"
 )
 
@@ -57,8 +56,8 @@ type LocalAssetFile struct {
 	// Live Photos
 	LivePhotoData string // Filename of MP4 file associated
 
-	FSys     fs.FS // Asset's file system
-	FileSize int   // File size in bytes
+	File     fs.File // File opened by the walker
+	FileSize int     // File size in bytes
 
 	// buffer management
 	sourceFile fs.File   // the opened source file
@@ -67,8 +66,9 @@ type LocalAssetFile struct {
 	reader     io.Reader // the reader that combines the partial read and original file for full file reading
 }
 
+// DebugObject implement Debug interface and filter structure member
 func (l LocalAssetFile) DebugObject() any {
-	l.FSys = nil
+	l.File = nil
 	return l
 }
 
@@ -79,14 +79,6 @@ func (l *LocalAssetFile) AddAlbum(album LocalAlbum) {
 		}
 	}
 	l.Albums = append(l.Albums, album)
-}
-
-// Remove the temporary file
-func (l *LocalAssetFile) Remove() error {
-	if fsys, ok := l.FSys.(fshelper.Remover); ok {
-		return fsys.Remove(l.FileName)
-	}
-	return nil
 }
 
 func (l *LocalAssetFile) DeviceAssetID() string {
@@ -101,10 +93,7 @@ func (l *LocalAssetFile) DeviceAssetID() string {
 
 func (l *LocalAssetFile) PartialSourceReader() (reader io.Reader, err error) {
 	if l.sourceFile == nil {
-		l.sourceFile, err = l.FSys.Open(l.FileName)
-		if err != nil {
-			return nil, err
-		}
+		l.sourceFile = l.File
 	}
 	if l.tempFile == nil {
 		tempDir, err := os.UserCacheDir()
@@ -127,12 +116,8 @@ func (l *LocalAssetFile) PartialSourceReader() (reader io.Reader, err error) {
 
 // Open return fs.File that reads previously read bytes followed by the actual file content.
 func (l *LocalAssetFile) Open() (fs.File, error) {
-	var err error
 	if l.sourceFile == nil {
-		l.sourceFile, err = l.FSys.Open(l.FileName)
-		if err != nil {
-			return nil, err
-		}
+		l.sourceFile = l.File
 	}
 	if l.tempFile != nil {
 		l.tempFile.Seek(0, 0)
