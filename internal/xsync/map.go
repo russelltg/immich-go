@@ -22,6 +22,14 @@ func (m *Map[K, T]) Get(key K) T {
 	return m.data[key]
 }
 
+// GetExists the element associated with the K, and return key existence
+func (m *Map[K, T]) GetExists(key K) (T, bool) {
+	m.lo.RLock()
+	defer m.lo.RUnlock()
+	v, ok := m.data[key]
+	return v, ok
+}
+
 // Set the element with the K
 func (m *Map[K, T]) Set(key K, v T) {
 	m.lo.Lock()
@@ -47,4 +55,16 @@ func (m *Map[K, T]) Keys() []K {
 		i++
 	}
 	return keys
+}
+
+func (m *Map[K, T]) All(yield func(K, T) bool) bool {
+	m.lo.RLock()
+	defer m.lo.RUnlock()
+
+	for k, elem := range m.data {
+		if !yield(k, elem) {
+			return false
+		}
+	}
+	return true
 }

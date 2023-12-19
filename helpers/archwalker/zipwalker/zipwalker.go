@@ -11,6 +11,7 @@ type ZipWalker struct {
 	zipReader   *zip.ReadCloser
 	files       []*zip.File
 	currentFile int
+	name        string
 }
 
 func New(ctx context.Context, pathName string) (*ZipWalker, error) {
@@ -22,10 +23,13 @@ func New(ctx context.Context, pathName string) (*ZipWalker, error) {
 	w := ZipWalker{
 		zipReader:   zr,
 		currentFile: -1,
+		name:        pathName,
 	}
 	w.files = w.zipReader.File
 	return &w, nil
 }
+
+func (w ZipWalker) Name() string { return w.name }
 
 func (w *ZipWalker) Next() (string, fs.DirEntry, error) {
 	var f *zip.File
@@ -60,4 +64,9 @@ func (w *ZipWalker) Open() (fs.File, error) {
 
 func (w *ZipWalker) Close() error {
 	return w.zipReader.Close()
+}
+
+func (w *ZipWalker) Rewind() error {
+	w.currentFile = -1
+	return nil
 }

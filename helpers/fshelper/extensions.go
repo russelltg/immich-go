@@ -2,6 +2,7 @@ package fshelper
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/simulot/immich-go/helpers/gen"
@@ -90,4 +91,10 @@ func IsExtensionPrefix(ext string) bool {
 		}
 	}
 	return false
+}
+
+var ignoreExtensions = []string{".html", ".mp"}
+
+func IsExtensionIgnored(e string) bool {
+	return slices.Contains(ignoreExtensions, e)
 }

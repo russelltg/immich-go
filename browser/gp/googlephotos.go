@@ -3,7 +3,7 @@ package gp
 import (
 	"context"
 	"fmt"
-	"io/fs"
+	"io"
 	"path"
 	"sort"
 	"strings"
@@ -13,133 +13,170 @@ import (
 	"github.com/simulot/immich-go/helpers/archwalker"
 	"github.com/simulot/immich-go/helpers/fshelper"
 	"github.com/simulot/immich-go/helpers/gen"
-	"github.com/simulot/immich-go/internal/xsync"
 	"github.com/simulot/immich-go/journal"
 	"github.com/simulot/immich-go/logger"
 )
 
 type Takeout struct {
-	walkers     []archwalker.Walker
-	filesByDir  xsync.Map[string, xsync.List[fileReference]] //map[string][]fileReference    // files name mapped by dir
-	jsonByYear  xsync.Map[jsonKey, *GoogleMetaData]          // map[jsonKey]*GoogleMetaData                  // assets by year of capture and full path
-	albumsByDir xsync.Map[string, browser.LocalAlbum]        // map[string]browser.LocalAlbum                // album title mapped by dir
-	log         logger.Logger
-	conf        *browser.Configuration
+	walkers    []archwalker.Walker
+	catalogs   map[archwalker.Walker]walkerCatalog // file catalogs by walker
+	jsonByYear map[jsonKey]*GoogleMetaData         // assets by year of capture and base name
+	uploaded   map[fileKey]any                     // track files already uploaded
+	albums     map[string]string                   // tack album names by folder
+	log        logger.Logger
+	conf       *browser.Configuration
 }
 
-type fileReference struct {
-	walker archwalker.Walker
-	fileKey
-	taken bool // True, when the file as been associated to a json and sent to the uploader
+// walkerCatalog collects all directory catalogs
+type walkerCatalog map[string]directoryCatalog // by directory in the walker
+
+// directoryCatalog captures all files in a given directory
+type directoryCatalog struct {
+	// isAlbum    bool                // true when the directory is recognized as an album
+	// albumTitle string              // album title from album's metadata
+	files map[string]fileInfo // map of fileInfo by base name
 }
+
+// fileInfo keep information collected during pass one
+type fileInfo struct {
+	length int             // file length in bytes
+	md     *GoogleMetaData // will point to the associated metadata
+}
+
+// fileKey is the key of the uploaded files map
 type fileKey struct {
-	name string
-	size int64
+	base   string
+	length int
+	year   int
 }
 
+// jsonKey allow to map jsons by base name and year of capture
 type jsonKey struct {
-	year int
 	name string
+	year int
 }
-type Album struct {
-	Title string
+
+type fileWalkerPath struct {
+	w archwalker.Walker
+	p string
 }
 
 func NewTakeout(ctx context.Context, log logger.Logger, conf *browser.Configuration, walkers []archwalker.Walker) (*Takeout, error) {
 	to := Takeout{
-		walkers:     walkers,
-		filesByDir:  xsync.Map[string, xsync.List[fileReference]]{}, // map[string][]fileReference{},
-		jsonByYear:  xsync.Map[jsonKey, *GoogleMetaData]{},          // map[jsonKey]*GoogleMetaData{},
-		albumsByDir: xsync.Map[string, browser.LocalAlbum]{},        // map[string]browser.LocalAlbum{},
-		log:         log,
-		conf:        conf,
+		walkers:    walkers,
+		jsonByYear: map[jsonKey]*GoogleMetaData{},
+		albums:     map[string]string{},
+		log:        log,
+		conf:       conf,
 	}
-	err := to.walk(ctx, fsys)
+	err := to.passOne(ctx)
+	if err != nil {
+		return nil, err
+	}
 
+	to.solvePuzzle(ctx)
 	return &to, err
 }
 
-func (to *Takeout) scan(w archwalker.Walker) {
+// passOne scans all files in all walker to build the file catalog of the archive
+// metadata files content is read and kept
 
+func (to *Takeout) passOne(ctx context.Context) error {
+	to.catalogs = map[archwalker.Walker]walkerCatalog{}
+	for _, w := range to.walkers {
+		to.catalogs[w] = walkerCatalog{}
+		wName := w.Name()
+		to.log.OK("Scanning the Google Photos takeout: %s", wName)
+	nextWalker:
+		for {
+			select {
+			case <-ctx.Done():
+				// Check if the context has been cancelled
+				return ctx.Err()
+			default:
+				name, dirInfo, err := w.Next()
+				if err == io.EOF {
+					break nextWalker
+				}
+				if err != nil {
+					return err
+				}
+
+				dir, base := path.Split(name)
+				dir = strings.TrimSuffix(dir, "/")
+				ext := strings.ToLower(path.Ext(name))
+				fullName := path.Join(wName, name)
+				to.conf.Journal.AddEntry(fullName, journal.DISCOVERED_FILE, "")
+
+				dirCatalog := to.catalogs[w][dir]
+				if dirCatalog.files == nil {
+					dirCatalog.files = map[string]fileInfo{}
+				}
+				finfo, err := dirInfo.Info()
+				if err != nil {
+					return err
+				}
+
+				switch ext {
+				case ".json":
+					md, err := fshelper.ReadAndCloseJSON[GoogleMetaData](w.Open())
+					if err == nil {
+						switch {
+						case md.isAsset():
+							to.addJson(w, dir, base, md)
+							to.conf.Journal.AddEntry(fullName, journal.METADATA, "Asset Title: "+md.Title)
+						case md.isAlbum():
+							to.albums[dir] = md.Title
+							to.conf.Journal.AddEntry(fullName, journal.METADATA, "Album title: "+md.Title)
+						default:
+							to.conf.Journal.AddEntry(fullName, journal.ERROR, "Unknown json file")
+							continue
+						}
+					} else {
+						to.conf.Journal.AddEntry(fullName, journal.ERROR, "Unknown json file")
+						continue
+					}
+				default:
+					m, err := fshelper.MimeFromExt(ext)
+					if err != nil {
+						to.conf.Journal.AddEntry(fullName, journal.UNSUPPORTED, "")
+						continue
+					}
+
+					if strings.Contains(fullName, "Failed Videos") {
+						to.conf.Journal.AddEntry(fullName, journal.FAILED_VIDEO, "")
+						continue
+					}
+					dirCatalog.files[base] = fileInfo{
+						length: int(finfo.Size()),
+					}
+					ss := strings.Split(m[0], "/")
+					if ss[0] == "image" {
+						to.conf.Journal.AddEntry(fullName, journal.SCANNED_IMAGE, "")
+					} else {
+						to.conf.Journal.AddEntry(fullName, journal.SCANNED_VIDEO, "")
+					}
+				}
+				to.catalogs[w][dir] = dirCatalog
+			}
+		}
+	}
+	to.log.OK("Scanning the Google Photos takeout, pass one completed.")
+	return nil
 }
 
-// walk the given FS to collect images file names and metadata files
-func (to *Takeout) walk(ctx context.Context, fsys fs.FS) error {
-	to.log.OK("Scanning the Google Photos takeout")
-	err := fs.WalkDir(fsys, ".", func(name string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			// Check if the context has been cancelled
-			return ctx.Err()
-		default:
-		}
-		dir, base := path.Split(name)
-		dir = strings.TrimSuffix(dir, "/")
-		if dir == "" {
-			dir = "."
-		}
-		if d.IsDir() {
-			return nil
-		}
-		ext := strings.ToLower(path.Ext(name))
-		switch ext {
-		case ".json":
-			md, err := fshelper.ReadJSON[GoogleMetaData](fsys, name)
-			if err == nil {
-				switch {
-				case md.isAlbum():
-					to.albumsByDir[dir] = browser.LocalAlbum{
-						Path: path.Base(dir),
-						Name: md.Title,
-					}
-					to.conf.Journal.AddEntry(name, journal.METADATA, "Album title: "+md.Title)
-				case md.Category != "":
-					to.conf.Journal.AddEntry(name, journal.METADATA, "unknown json file")
-					return nil
-				default:
-					key := jsonKey{
-						year: md.PhotoTakenTime.Time().Year(),
-						name: base,
-					}
-					if prevMD, exists := to.jsonByYear[key]; exists {
-						prevMD.foundInPaths = append(prevMD.foundInPaths, dir)
-						to.jsonByYear[key] = prevMD
-					} else {
-						md.foundInPaths = append(md.foundInPaths, dir)
-						to.jsonByYear[key] = md
-					}
-					to.conf.Journal.AddEntry(name, journal.METADATA, "Title: "+md.Title)
-				}
-			} else {
-				to.conf.Journal.AddEntry(name, journal.ERROR, err.Error())
-			}
-		default:
-			to.conf.Journal.AddEntry(name, journal.SCANNED, "")
-			if _, err := fshelper.MimeFromExt(ext); err != nil {
-				to.conf.Journal.AddEntry(name, journal.UNSUPPORTED, "")
-				return nil
-			}
+// addJson stores metadata and all paths where the combo base+year has been found
+func (to *Takeout) addJson(w archwalker.Walker, dir, base string, md *GoogleMetaData) {
+	k := jsonKey{
+		name: base,
+		year: md.PhotoTakenTime.Time().Year(),
+	}
 
-			if strings.Contains(name, "Failed Videos") {
-				to.conf.Journal.AddEntry(name, journal.FAILED_VIDEO, "")
-				return nil
-			}
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			key := fileReference{fileKey: fileKey{name: base, size: info.Size()}}
-			l := to.filesByDir[dir]
-			l = append(l, key)
-			to.filesByDir[dir] = l
-		}
-		return nil
-	})
-	to.log.OK("Scanning the Google Photos takeout completed.")
-	return err
+	if mdPresent, ok := to.jsonByYear[k]; ok {
+		md = mdPresent
+	}
+	md.foundInPaths = append(md.foundInPaths, dir)
+	to.jsonByYear[k] = md
 }
 
 type matcherFn func(jsonName string, fileName string) bool
@@ -154,7 +191,7 @@ var matchers = []matcherFn{
 	matchForgottenDuplicates,
 }
 
-// Browse gives back to the main program the list of assets with resolution of file name, album, dates...
+// solvePuzzle prepares metadata with information collected during pass one for each accepted files
 //
 // JSON files give important information about the relative photos / movies:
 //   - The original name (useful when it as been truncated)
@@ -170,7 +207,7 @@ var matchers = []matcherFn{
 // -   the file is named after the JSON name
 // -   the file name can be 1 UTF-16 char shorter (🤯) than the JSON name
 // -   the file name is longer than 46 UTF-16 chars (🤯) is truncated. But the truncation can creates duplicates, then a number is added.
-// -   if there are several files with same original name, the first instance kept as it is, the next have a a sequence number.
+// -   if there are several files with same original name, the first instance kept as it is, the next has a sequence number.
 //       File is renamed as IMG_1234(1).JPG and the JSON is renamed as IMG_1234.JPG(1).JSON
 // -   of course those rules are likely to collide. They have to be applied from the most common to the least one.
 // -   sometimes the file isn't in the same folder than the json... It can be found in Year's photos folder
@@ -178,99 +215,51 @@ var matchers = []matcherFn{
 // The duplicates files (same name, same length in bytes) found in the local source are discarded before been presented to the immich server.
 //
 
-func (to *Takeout) Browse(ctx context.Context) chan *browser.LocalAssetFile {
-	c := make(chan *browser.LocalAssetFile)
-	passed := map[fileKey]any{}
-	go func() {
-		defer close(c)
+func (to *Takeout) solvePuzzle(ctx context.Context) error {
+	jsonKeys := gen.MapKeys(to.jsonByYear)
+	sort.Slice(jsonKeys, func(i, j int) bool {
+		yd := jsonKeys[i].year - jsonKeys[j].year
+		switch {
+		case yd < 0:
+			return true
+		case yd > 0:
+			return false
+		}
+		return jsonKeys[i].name < jsonKeys[j].name
+	})
 
-		jsonFile := gen.MapKeys(to.jsonByYear)
-		sort.Slice(jsonFile, func(i, j int) bool {
-			return to.jsonByYear[jsonFile[i]].foundInPaths[0] < to.jsonByYear[jsonFile[j]].foundInPaths[0]
-		})
-
-		// For the most common matcher to the least,
+	// For the most common matcher to the least,
+	for _, matcher := range matchers {
 		// Check files that match each json files
-		for _, matcher := range matchers {
-			for _, k := range jsonFile {
-				md := to.jsonByYear[k]
-				assets := to.jsonAssets(k, md, matcher)
+		for _, k := range jsonKeys {
+			md := to.jsonByYear[k]
 
-				for _, a := range assets {
-					to.conf.Journal.AddEntry(a.FileName, journal.JSON, k.name)
-					ext := path.Ext(a.FileName)
-					if !to.conf.SelectExtensions.Include(ext) {
-						to.conf.Journal.AddEntry(a.FileName, journal.DISCARDED, "because of select-type option")
-						continue
-					}
-					if to.conf.ExcludeExtensions.Exclude(ext) {
-						to.conf.Journal.AddEntry(a.FileName, journal.DISCARDED, "because of exclude-type option")
-						continue
-					}
-					fk := fileKey{name: path.Base(a.FileName), size: int64(a.FileSize)}
-					if _, exist := passed[fk]; !exist {
-						passed[fk] = nil
-						select {
-						case <-ctx.Done():
-							return
-						default:
-							c <- a
+			// list of paths where to search the assets: paths where this json has been found + year path in all of the walkers
+			paths := map[string]any{}
+			paths[path.Join(path.Dir(md.foundInPaths[0]), fmt.Sprintf("Photos from %d", md.PhotoTakenTime.Time().Year()))] = nil
+			for _, d := range md.foundInPaths {
+				paths[d] = nil
+			}
+			for d := range paths {
+				for _, w := range to.walkers {
+					l := to.catalogs[w][d]
+					for f := range l.files {
+						if l.files[f].md == nil {
+							if matcher(k.name, f) {
+								to.conf.Journal.AddEntry(path.Join(w.Name(), d, f), journal.ASSOCIATED_META, fmt.Sprintf("%s (%d)", k.name, k.year))
+								// if not already matched
+								i := l.files[f]
+								i.md = md
+								l.files[f] = i
+							}
 						}
-					} else {
-						to.conf.Journal.AddEntry(a.FileName, journal.LOCAL_DUPLICATE, fk.name)
 					}
+					to.catalogs[w][d] = l
 				}
 			}
 		}
-
-		leftOver := 0
-		for _, l := range to.filesByDir {
-			for _, f := range l {
-				if !f.taken {
-					leftOver++
-				}
-			}
-		}
-		to.log.Error("%d files left over", leftOver)
-
-	}()
-
-	return c
-
-}
-
-// jsonAssets search assets that are linked to this JSON using the given matcher
-
-func (to *Takeout) jsonAssets(key jsonKey, md *GoogleMetaData, matcher matcherFn) []*browser.LocalAssetFile {
-
-	var list []*browser.LocalAssetFile
-
-	yearDir := path.Join(path.Dir(md.foundInPaths[0]), fmt.Sprintf("Photos from %d", md.PhotoTakenTime.Time().Year()))
-
-	jsonInYear := false
-	paths := md.foundInPaths
-	for _, d := range md.foundInPaths {
-		if d == yearDir {
-			jsonInYear = true
-			break
-		}
 	}
-	if !jsonInYear {
-		paths = append(paths, yearDir)
-	}
-
-	// Search for the assets in folders where the JSON has been found
-	for _, d := range paths {
-		l := to.filesByDir[d]
-
-		for i, f := range l {
-			if !f.taken && matcher(key.name, f.name) {
-				list = append(list, to.copyGoogleMDToAsset(md, path.Join(d, f.name), int(f.size)))
-				l[i].taken = true
-			}
-		}
-	}
-	return list
+	return nil
 }
 
 // normalMatch
@@ -394,11 +383,86 @@ func matchForgottenDuplicates(jsonName string, fileName string) bool {
 	return false
 }
 
-func (to *Takeout) copyGoogleMDToAsset(md *GoogleMetaData, filename string, length int) *browser.LocalAssetFile {
+// Browse return a channel of assets
+//
+// Walkers are rewind, and scanned again
+// each file net yet sent to immich is sent with associated metadata
+
+func (to *Takeout) Browse(ctx context.Context) chan *browser.LocalAssetFile {
+	to.uploaded = map[fileKey]any{}
+	assetChan := make(chan *browser.LocalAssetFile)
+	go func() {
+		defer close(assetChan)
+
+		for _, w := range to.walkers {
+			err := w.Rewind()
+			if err != nil {
+				assetChan <- &browser.LocalAssetFile{
+					Err: err,
+				}
+			}
+			for {
+				name, dirInfo, err := w.Next()
+				if err == io.EOF {
+					break // next walker
+				}
+				if err != nil {
+					to.log.Error("can't browse: %s", err)
+					return
+				}
+
+				dir, base := path.Split(name)
+				dir = strings.TrimSuffix(dir, "/")
+				ext := path.Ext(base)
+				if _, err := fshelper.MimeFromExt(ext); err != nil {
+					continue
+				}
+				fullPath := path.Join(w.Name(), name)
+				f, exist := to.catalogs[w][dir].files[base]
+				if !exist {
+					// this file isn't an asset
+					continue
+				}
+
+				if f.md == nil {
+					to.conf.Journal.AddEntry(fullPath, journal.ERROR, "JSON File not found for this file")
+					continue
+				}
+				finfo, err := dirInfo.Info()
+				if err != nil {
+					to.log.Error("can't browse: %s", err)
+					return
+				}
+
+				key := fileKey{
+					base:   base,
+					length: int(finfo.Size()),
+					year:   f.md.PhotoTakenTime.Time().Year(),
+				}
+				if _, exists := to.uploaded[key]; exists {
+					to.conf.Journal.AddEntry(fullPath, journal.LOCAL_DUPLICATE, "")
+					continue
+				}
+				a := to.googleMDToAsset(f.md, key)
+				select {
+				case <-ctx.Done():
+					return
+				case assetChan <- a:
+					to.uploaded[key] = nil
+				}
+			}
+		}
+	}()
+
+	return assetChan
+}
+
+// googleMDToAsset makes a localAssetFile based on the google metadata
+func (to *Takeout) googleMDToAsset(md *GoogleMetaData, key fileKey) *browser.LocalAssetFile {
 	// Change file's title with the asset's title and the actual file's extension
 	title := md.Title
 	titleExt := path.Ext(title)
-	fileExt := path.Ext(filename)
+	fileExt := path.Ext(key.base)
 	if titleExt != fileExt {
 		title = strings.TrimSuffix(title, titleExt)
 		titleExt = path.Ext(title)
@@ -408,8 +472,8 @@ func (to *Takeout) copyGoogleMDToAsset(md *GoogleMetaData, filename string, leng
 	}
 
 	a := browser.LocalAssetFile{
-		FileName:    filename,
-		FileSize:    length,
+		FileName:    key.base,
+		FileSize:    key.length,
 		Title:       title,
 		Description: md.Description,
 		Altitude:    md.GeoDataExif.Altitude,
@@ -420,13 +484,12 @@ func (to *Takeout) copyGoogleMDToAsset(md *GoogleMetaData, filename string, leng
 		Trashed:     md.Trashed,
 		DateTaken:   md.PhotoTakenTime.Time(),
 		Favorite:    md.Favorited,
-		FSys:        to.fsys,
 	}
-	for _, p := range md.foundInPaths {
-		if album, exists := to.albumsByDir[p]; exists {
-			a.Albums = append(a.Albums, album)
-		}
 
+	for _, p := range md.foundInPaths {
+		if album, exists := to.albums[p]; exists {
+			a.Albums = append(a.Albums, browser.LocalAlbum{Path: p, Name: album})
+		}
 	}
 	return &a
 }

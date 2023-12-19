@@ -13,6 +13,7 @@ func TestPresentFields(t *testing.T) {
 		json      string
 		isPartner bool
 		isAlbum   bool
+		isAsset   bool
 	}{
 		{
 			name: "regularJSON",
@@ -54,6 +55,7 @@ func TestPresentFields(t *testing.T) {
 			  }`,
 			isPartner: false,
 			isAlbum:   false,
+			isAsset:   true,
 		},
 		{
 			name: "albumJson",
@@ -76,6 +78,7 @@ func TestPresentFields(t *testing.T) {
 			  }`,
 			isPartner: false,
 			isAlbum:   true,
+			isAsset:   false,
 		},
 		{
 			name: "partner",
@@ -113,6 +116,14 @@ func TestPresentFields(t *testing.T) {
 			  }`,
 			isPartner: true,
 			isAlbum:   false,
+			isAsset:   true,
+		},
+		{
+			name:      "empty",
+			json:      `{}`,
+			isPartner: false,
+			isAlbum:   false,
+			isAsset:   false,
 		},
 	}
 
@@ -129,6 +140,9 @@ func TestPresentFields(t *testing.T) {
 			}
 			if c.isPartner != md.isPartner() {
 				t.Errorf("expected isPartner to be %t, got %t", c.isPartner, md.isPartner())
+			}
+			if c.isAsset != md.isAsset() {
+				t.Errorf("expected isAsset to be %t, got %t", c.isAsset, md.isAsset())
 			}
 		})
 	}

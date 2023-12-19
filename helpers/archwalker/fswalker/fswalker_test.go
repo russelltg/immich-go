@@ -40,7 +40,7 @@ func Test_FsWalker(t *testing.T) {
 
 	for _, tt := range tc {
 		t.Run(tt.name, func(t *testing.T) {
-			w, err := fswalker.New(context.Background(), os.DirFS(tt.path), tt.rec)
+			w, err := fswalker.New(context.Background(), os.DirFS(tt.path), tt.name, tt.rec)
 			if err != nil {
 				t.Errorf("can't create the walker: %s", err)
 				return

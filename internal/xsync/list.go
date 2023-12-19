@@ -47,3 +47,11 @@ func (l *List[T]) Len() int {
 
 	return len(l.data)
 }
+
+// Item returns the ith element in l
+func (l *List[T]) Item(i int) T {
+	l.lo.RLock()
+	defer l.lo.RUnlock()
+
+	return l.data[i]
+}

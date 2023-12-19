@@ -4,43 +4,37 @@ import (
 	"context"
 	"io"
 	"io/fs"
-	"sync"
 )
 
 type FsWalker struct {
 	ctx       context.Context
 	fsys      fs.FS
 	recursive bool
-	fileChan  chan fileinfo
-	stopChan  chan any
-	running   sync.WaitGroup
-	currFile  fileinfo
+	curIdx    int
+	entries   []fileInfo
+	name      string
 }
 
-type fileinfo struct {
-	err      error
+type fileInfo struct {
 	fullName string
 	dirEntry fs.DirEntry
 }
 
-func New(ctx context.Context, fsys fs.FS, recursive bool) (*FsWalker, error) {
+func New(ctx context.Context, fsys fs.FS, name string, recursive bool) (*FsWalker, error) {
 	w := FsWalker{
 		fsys:      fsys,
 		ctx:       ctx,
 		recursive: recursive,
+		curIdx:    -1,
+		name:      name,
 	}
-	w.start()
-	return &w, nil
+	err := w.scan(ctx)
+	return &w, err
 }
 
-func (w *FsWalker) start() {
-	w.fileChan = make(chan fileinfo)
-	w.stopChan = make(chan any)
-	w.running.Add(1)
-	go w.run(w.ctx)
-}
-func (w *FsWalker) run(ctx context.Context) {
-	defer w.running.Done()
+func (w FsWalker) Name() string { return w.name }
+
+func (w *FsWalker) scan(ctx context.Context) error {
 
 	err := fs.WalkDir(w.fsys, ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -56,43 +50,32 @@ func (w *FsWalker) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-w.stopChan:
-			return io.EOF
-		case w.fileChan <- fileinfo{fullName: name, dirEntry: d}:
+		default:
+			w.entries = append(w.entries, fileInfo{name, d})
 		}
 		return nil
 	})
-	if err != nil {
-		w.fileChan <- fileinfo{err, "", nil}
-		return
-	}
-	w.fileChan <- fileinfo{io.EOF, "", nil}
+	return err
 }
 
 func (w *FsWalker) Next() (string, fs.DirEntry, error) {
-	info := <-w.fileChan
-	if info.err != nil {
-		return "", nil, info.err
+	w.curIdx++
+	if w.curIdx >= len(w.entries) {
+		return "", nil, io.EOF
 	}
-	w.currFile = info
-	return info.fullName, info.dirEntry, nil
+	e := w.entries[w.curIdx]
+	return e.fullName, e.dirEntry, nil
 }
 
 func (w *FsWalker) Open() (fs.File, error) {
-	return w.fsys.Open(w.currFile.fullName)
+	return w.fsys.Open(w.entries[w.curIdx].fullName)
 }
 
 func (w *FsWalker) Close() error {
-	close(w.stopChan)
-	<-w.running.Wait()
 	return nil
 }
 
 func (w *FsWalker) Rewind() error {
-	err := w.Close()
-	if err != nil {
-		return nil
-	}
-	w.start()
+	w.curIdx = -1
 	return nil
 }

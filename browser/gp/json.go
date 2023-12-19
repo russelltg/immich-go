@@ -24,6 +24,7 @@ type GoogleMetaData struct {
 		FromPartnerSharing googIsPresent `json:"fromPartnerSharing"` // true when this is a partner's asset
 	} `json:"googlePhotosOrigin"`
 	foundInPaths []string // Not in the JSON, keep track of paths where the json has been found
+	// inAlbums     []fileWalkerPath // list albums that contain this file
 }
 
 func (gmd GoogleMetaData) isAlbum() bool {
@@ -32,6 +33,10 @@ func (gmd GoogleMetaData) isAlbum() bool {
 
 func (gmd GoogleMetaData) isPartner() bool {
 	return bool(gmd.GooglePhotosOrigin.FromPartnerSharing)
+}
+
+func (gmd GoogleMetaData) isAsset() bool {
+	return bool(gmd.URLPresent)
 }
 
 // Key return an expected unique key for the asset
@@ -75,86 +80,3 @@ func (gt googTimeObject) Time() time.Time {
 	//	t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
 	return t.In(local)
 }
-
-// // UnmarshalJSON read the googTimeObject from the json
-// func (t *googTimeObject) UnmarshalJSON(data []byte) error {
-// 	type Alias googTimeObject
-// 	aux := &struct {
-// 		Timestamp string `json:"timestamp"`
-// 		*Alias
-// 	}{
-// 		Alias: (*Alias)(t),
-// 	}
-
-// 	err := json.Unmarshal(data, &aux)
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	t.Timestamp, err = strconv.ParseInt(aux.Timestamp, 10, 64)
-
-// 	return err
-// }
-
-/*
-	Typical metadata json
-
-	{
-		"title": "Title",
-		"description": "",
-		"access": "",
-		"date": {
-			"timestamp": "0",
-			"formatted": "1 janv. 1970, 00:00:00 UTC"
-		},
-		"location": "",
-		"geoData": {
-			"latitude": 0.0,
-			"longitude": 0.0,
-			"altitude": 0.0,
-			"latitudeSpan": 0.0,
-			"longitudeSpan": 0.0
-		}
-	}
-
-
-	Typical photo metadata
-
-	{
-		"title": "20161018_140312.mp4",
-		"description": "",
-		"imageViews": "87",
-		"creationTime": {
-			"timestamp": "1476820554",
-			"formatted": "18 oct. 2016, 19:55:54 UTC"
-		},
-		"photoTakenTime": {
-			"timestamp": "1476792192",
-			"formatted": "18 oct. 2016, 12:03:12 UTC"
-		},
-		"geoData": {
-			"latitude": 12.345,
-			"longitude": 1.12345,
-			"altitude": 0.0,
-			"latitudeSpan": 0.0,
-			"longitudeSpan": 0.0
-		},
-		"geoDataExif": {
-			"latitude": 12.345,
-			"longitude": 1.12345,
-			"altitude": 0.0,
-			"latitudeSpan": 0.0,
-			"longitudeSpan": 0.0
-		},
-		"url": "https://photos.google.com/photo/....",
-		"googlePhotosOrigin": {
-			"mobileUpload": {
-			"deviceFolder": {
-				"localFolderName": ""
-			},
-			"deviceType": "ANDROID_PHONE"
-			}
-		}
-	}
-
-*/

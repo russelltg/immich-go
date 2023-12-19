@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/simulot/immich-go/browser"
+	"github.com/simulot/immich-go/helpers/archwalker"
+	"github.com/simulot/immich-go/helpers/archwalker/fswalker"
 	"github.com/simulot/immich-go/logger"
 
 	"github.com/kr/pretty"
@@ -106,7 +108,13 @@ func TestBrowse(t *testing.T) {
 			}
 			ctx := context.Background()
 
-			b, err := NewTakeout(ctx, fsys, logger.NoLogger{}, &browser.Configuration{})
+			w, err := fswalker.New(ctx, fsys, c.name, true)
+			if err != nil {
+				t.Errorf("can't open the walker: %s", err)
+				return
+			}
+
+			b, err := NewTakeout(ctx, logger.NoLogger{}, &browser.Configuration{}, []archwalker.Walker{w})
 			if err != nil {
 				t.Error(err)
 			}
@@ -181,7 +189,13 @@ func TestAlbums(t *testing.T) {
 				t.Error(fsys.err)
 				return
 			}
-			b, err := NewTakeout(ctx, fsys, logger.NoLogger{}, &browser.Configuration{})
+			w, err := fswalker.New(ctx, fsys, c.name, true)
+			if err != nil {
+				t.Errorf("can't open the walker: %s", err)
+				return
+			}
+
+			b, err := NewTakeout(ctx, logger.NoLogger{}, &browser.Configuration{}, []archwalker.Walker{w})
 			if err != nil {
 				t.Error(err)
 			}

@@ -15,7 +15,8 @@ import (
 )
 
 type Walker interface {
-	Next() (string, fs.FileInfo, error) // Seek the next file, and return file's information
+	Name() string                       // Walker's name for logs
+	Next() (string, fs.DirEntry, error) // Seek the next file, and return file's information
 	Open() (fs.File, error)             // Open the last sought file
 	Close() error                       // Close the walker
 	Rewind() error                      // Start over at the beginning of the walker
